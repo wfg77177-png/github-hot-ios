@@ -133,6 +133,8 @@ struct ContentView: View {
     @State private var searchResults: [Repo] = []
     @State private var isSearching = false
     @State private var lastUpdated: String = ""
+    @State private var translations: [Int: String] = [:]
+    @State private var autoTranslate = true
 
     var body: some View {
         NavigationStack {
@@ -194,7 +196,7 @@ struct ContentView: View {
                         }
                         ForEach(Array(repos.enumerated()), id: \.element.id) { idx, repo in
                             NavigationLink(destination: RepoDetailView(repo: repo)) {
-                                RepoRow(rank: idx + 1, repo: repo)
+                                RepoRow(rank: idx + 1, repo: repo, translated: translations[repo.id])
                             }
                         }
                     }
@@ -203,6 +205,18 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("GitHub 热榜")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: {
+                        autoTranslate.toggle()
+                        if autoTranslate {
+                            Task { await translateAll() }
+                        }
+                    }) {
+                        Image(systemName: autoTranslate ? "character.bubble.fill" : "character.bubble")
+                    }
+                }
+            }
             .searchable(text: $searchText, prompt: "搜索仓库、作者…")
             .onSubmit(of: .search) { Task { await search() } }
             .onChange(of: searchText) { newValue in
@@ -214,7 +228,7 @@ struct ContentView: View {
             .task { await load() }
             .overlay {
                 if isSearching {
-                    SearchResultsView(results: searchResults, isLoading: isLoading)
+                    SearchResultsView(results: searchResults, isLoading: isLoading, translations: translations)
                 }
             }
         }
@@ -267,6 +281,44 @@ struct ContentView: View {
             errorText = "加载失败：" + error.localizedDescription
         }
         isLoading = false
+        if autoTranslate && errorText == nil {
+            await translateAll()
+        }
+    }
+
+    func translateOne(_ text: String, for repoId: Int) async {
+        guard !text.isEmpty else { return }
+        var comps = URLComponents(string: "https://api.mymemory.translated.net/get")
+        comps?.queryItems = [
+            URLQueryItem(name: "q", value: text),
+            URLQueryItem(name: "langpair", value: "en|zh-CN"),
+            URLQueryItem(name: "de", value: "6173396@gmail.com"),
+        ]
+        guard let url = comps?.url else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let responseData = json["responseData"] as? [String: Any],
+               let translated = responseData["translatedText"] as? String,
+               !translated.isEmpty, translated != text {
+                await MainActor.run {
+                    translations[repoId] = translated
+                }
+            }
+        } catch {
+        }
+    }
+
+    func translateAll() async {
+        await withTaskGroup(of: Void.self) { group in
+            for repo in repos {
+                if let desc = repo.description, !desc.isEmpty, translations[repo.id] == nil {
+                    group.addTask {
+                        await translateOne(desc, for: repo.id)
+                    }
+                }
+            }
+        }
     }
 
     func search() async {
@@ -301,6 +353,7 @@ struct ContentView: View {
 struct RepoRow: View {
     let rank: Int
     let repo: Repo
+    let translated: String?
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Text("\(rank)")
@@ -315,6 +368,12 @@ struct RepoRow: View {
                     Text(desc)
                         .font(.subheadline)
                         .foregroundColor(.secondary)
+                        .lineLimit(2)
+                }
+                if let zh = translated, !zh.isEmpty {
+                    Text(zh)
+                        .font(.subheadline)
+                        .foregroundColor(.primary)
                         .lineLimit(2)
                 }
                 HStack(spacing: 12) {
@@ -344,6 +403,7 @@ struct RepoRow: View {
 struct SearchResultsView: View {
     let results: [Repo]
     let isLoading: Bool
+    let translations: [Int: String]
     var body: some View {
         VStack {
             if isLoading {
@@ -356,7 +416,7 @@ struct SearchResultsView: View {
             } else {
                 List(results) { repo in
                     NavigationLink(destination: RepoDetailView(repo: repo)) {
-                        RepoRow(rank: 0, repo: repo)
+                        RepoRow(rank: 0, repo: repo, translated: translations[repo.id])
                     }
                 }
                 .listStyle(.plain)

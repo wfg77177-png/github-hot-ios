@@ -113,8 +113,10 @@ struct RepoDetailView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Link(destination: URL(string: repo.htmlUrl)!) {
-                        Image(systemName: "safari")
+                    if let url = URL(string: repo.htmlUrl) {
+                        Link(destination: url) {
+                            Image(systemName: "safari")
+                        }
                     }
                 }
             }
@@ -347,6 +349,17 @@ struct ContentView: View {
             searchResults = []
         }
         isLoading = false
+        if autoTranslate {
+            await withTaskGroup(of: Void.self) { group in
+                for repo in searchResults {
+                    if let desc = repo.description, !desc.isEmpty, translations[repo.id] == nil {
+                        group.addTask {
+                            await translateOne(desc, for: repo.id)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -356,10 +369,12 @@ struct RepoRow: View {
     let translated: String?
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Text("\(rank)")
-                .font(.headline)
-                .foregroundColor(rank <= 3 ? .orange : .secondary)
-                .frame(width: 28, alignment: .leading)
+            if rank > 0 {
+                Text("\(rank)")
+                    .font(.headline)
+                    .foregroundColor(rank <= 3 ? .orange : .secondary)
+                    .frame(width: 28, alignment: .leading)
+            }
             VStack(alignment: .leading, spacing: 4) {
                 Text(repo.fullName)
                     .font(.headline)

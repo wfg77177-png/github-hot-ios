@@ -1,5 +1,4 @@
 import SwiftUI
-import WebKit
 
 // MARK: - Models
 
@@ -91,35 +90,115 @@ func formatCount(_ n: Int) -> String {
     return "\(n)"
 }
 
-// MARK: - WebView
-
-struct RepoWebView: UIViewRepresentable {
-    let url: String
-    func makeUIView(context: Context) -> WKWebView {
-        let wv = WKWebView()
-        if let u = URL(string: url) {
-            wv.load(URLRequest(url: u))
-        }
-        return wv
-    }
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
-}
+// MARK: - Native Detail View (no web page load, always opens)
 
 struct RepoDetailView: View {
     let repo: Repo
+    let translated: String?
+    @State private var readme: String? = nil
+    @State private var readmeLoading = false
+    @State private var readmeError = false
+
     var body: some View {
-        RepoWebView(url: repo.htmlUrl)
-            .navigationTitle(repo.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    if let url = URL(string: repo.htmlUrl) {
-                        Link(destination: url) {
-                            Image(systemName: "safari")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 12) {
+                    AsyncImage(url: URL(string: repo.owner.avatarUrl)) { image in
+                        image.resizable().scaledToFill()
+                    } placeholder: {
+                        Color.gray.opacity(0.3)
+                    }
+                    .frame(width: 48, height: 48)
+                    .clipShape(Circle())
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(repo.name)
+                            .font(.title2)
+                            .bold()
+                            .lineLimit(2)
+                        Text(repo.owner.login)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                if let zh = translated, !zh.isEmpty {
+                    Text(zh)
+                        .font(.body)
+                } else if let desc = repo.description, !desc.isEmpty {
+                    Text(desc)
+                        .font(.body)
+                        .foregroundColor(.secondary)
+                }
+                HStack(spacing: 20) {
+                    Label(formatCount(repo.stargazersCount) + " 星标", systemImage: "star.fill")
+                    Label(formatCount(repo.forksCount) + " 复刻", systemImage: "tuningfork")
+                    if let lang = repo.language {
+                        HStack(spacing: 4) {
+                            Circle().fill(languageColor(lang)).frame(width: 10, height: 10)
+                            Text(lang)
                         }
                     }
                 }
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                HStack(spacing: 12) {
+                    if let url = URL(string: repo.htmlUrl) {
+                        Link(destination: url) {
+                            Label("在 Safari 打开", systemImage: "safari")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    Button(action: {
+                        UIPasteboard.general.string = repo.htmlUrl
+                    }) {
+                        Label("复制链接", systemImage: "doc.on.doc")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Divider()
+                Text("说明文档")
+                    .font(.headline)
+                if readmeLoading {
+                    ProgressView("正在加载说明…")
+                } else if let text = readme {
+                    Text(text)
+                        .font(.body)
+                        .textSelection(.enabled)
+                } else if readmeError {
+                    Text("说明加载失败，点上面「在 Safari 打开」查看完整页面。")
+                        .foregroundColor(.secondary)
+                }
             }
+            .padding()
+        }
+        .navigationTitle(repo.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await loadReadme() }
+    }
+
+    func loadReadme() async {
+        readmeLoading = true
+        let urlString = "https://api.github.com/repos/" + repo.fullName + "/readme"
+        guard let url = URL(string: urlString) else {
+            readmeLoading = false
+            readmeError = true
+            return
+        }
+        do {
+            var req = URLRequest(url: url)
+            req.setValue("application/vnd.github.raw", forHTTPHeaderField: "Accept")
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            if let http = resp as? HTTPURLResponse, http.statusCode == 200,
+               let text = String(data: data, encoding: .utf8), !text.isEmpty {
+                readme = text
+            } else {
+                readmeError = true
+            }
+        } catch {
+            readmeError = true
+        }
+        readmeLoading = false
     }
 }
 
@@ -197,7 +276,7 @@ struct ContentView: View {
                                 .listRowSeparator(.hidden)
                         }
                         ForEach(Array(repos.enumerated()), id: \.element.id) { idx, repo in
-                            NavigationLink(destination: RepoDetailView(repo: repo)) {
+                            NavigationLink(destination: RepoDetailView(repo: repo, translated: translations[repo.id])) {
                                 RepoRow(rank: idx + 1, repo: repo, translated: translations[repo.id])
                             }
                         }
@@ -379,16 +458,15 @@ struct RepoRow: View {
                 Text(repo.fullName)
                     .font(.headline)
                     .lineLimit(1)
-                if let desc = repo.description, !desc.isEmpty {
-                    Text(desc)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .lineLimit(2)
-                }
                 if let zh = translated, !zh.isEmpty {
                     Text(zh)
                         .font(.subheadline)
                         .foregroundColor(.primary)
+                        .lineLimit(2)
+                } else if let desc = repo.description, !desc.isEmpty {
+                    Text(desc)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
                         .lineLimit(2)
                 }
                 HStack(spacing: 12) {
@@ -430,7 +508,7 @@ struct SearchResultsView: View {
                     .padding(.top, 40)
             } else {
                 List(results) { repo in
-                    NavigationLink(destination: RepoDetailView(repo: repo)) {
+                    NavigationLink(destination: RepoDetailView(repo: repo, translated: translations[repo.id])) {
                         RepoRow(rank: 0, repo: repo, translated: translations[repo.id])
                     }
                 }
